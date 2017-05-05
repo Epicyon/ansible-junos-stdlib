@@ -32,6 +32,16 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import re
+#import sys
+import os
+from distutils.version import LooseVersion
+import logging
+import lxml
+from lxml import etree
+from ansible.module_utils.basic import *
+from xmljson import parker as pk
+
 DOCUMENTATION = '''
 ---
 module: junos_rpc
@@ -161,12 +171,6 @@ EXAMPLES = '''
       debug: msg="{{ junos.rpc_reply }}"
 '''
 
-import os
-import sys
-import logging
-import re
-from jnpr.junos import Device
-from lxml import etree
 
 def junos_rpc(module, dev):
     args = module.params
@@ -175,7 +179,6 @@ def junos_rpc(module, dev):
         logging.basicConfig(filename=logfile, level=logging.INFO,
                             format='%(asctime)s:%(name)s:%(message)s')
         logging.getLogger().name = 'CONFIG:' + args['host']
-
     results = {}
     kwargs = module.params['kwargs']
     rpc = module.params['rpc']
@@ -183,34 +186,60 @@ def junos_rpc(module, dev):
     results['kwargs'] = kwargs
     results['changed'] = False
     results['check_mode'] = module.check_mode
-    logging.info("calling RPC: {0}".format(rpc))
+    filter_xpath = module.params['filter_xpath']
+
     try:
         if kwargs is None:
             values = {}
-        elif re.search(r'\{.*\}', kwargs):
-            values = {k:v for k,v in re.findall(r'([\w-]+)\s?:\s?\'?\"?([\w\.-]+)\'?\"?',kwargs)}
+        elif re.search(r'{.*}', kwargs):
+            values = {k: v for k, v in re.findall('\'([\w-]+)\'\s?:\s?\'?\"?([\w\.-]+)\'?\"?', kwargs)}
         else:
-            values = {k:v for k,v in re.findall('([\w-]+)=([\w\.\-\/]+)', kwargs)}
-        for k,v in values.items():
+            values = {k: v for k, v in re.findall('([\w-]+)=([\w\.\-\/]+)', kwargs)}
+        for k, v in values.items():
             if v in ['True', 'true']:
-                values[k]=True
+                values[k] = True
             elif v in ['False', 'false']:
-                values[k]=False
+                values[k] = False
         if rpc in ['get-config', 'get_config']:
             filter_xml = module.params['filter_xml']
             if filter_xml is not None:
                 filter_xml = etree.XML(filter_xml)
             values['format'] = args['format']
-            rpc_reply = getattr(dev.rpc, rpc.replace('-','_'))(filter_xml, options=values)
+            rpc_reply = getattr(dev.rpc, rpc.replace('-', '_'))(filter_xml, options=values)
+            if module.params['stdout'] is True:
+                results['stdout'] = etree.tostring(rpc_reply, pretty_print=True)
         else:
-            rpc_reply = getattr(dev.rpc, rpc.replace('-','_'))({'format':args['format']}, **values)
+            rpc_reply = getattr(dev.rpc, rpc.replace('-', '_'))({'format': args['format']}, **values)
+            if module.params['stdout'] is True:
+                results['stdout'] = etree.tostring(rpc_reply, pretty_print=True)
+
         if module.params['dest'] is not None:
-            with open(module.params['dest'], 'w') as confile:
-                if isinstance(rpc_reply, etree._Element):
-                    if args.get('format') == 'text':
+            with open(module.params['dest'] + '/' + module.params['host'], 'w') as confile:
+                if etree.iselement(rpc_reply):
+                    if filter_xpath is not None:
+                        filter_xpath = module.params['filter_xpath'][0]
+                        xpath_subelements = module.params['xpath_subelements']
+                        logging.info(filter_xpath)
+                        for parent in rpc_reply.xpath(filter_xpath):
+                            for child in parent:
+                                for xpath_filter in xpath_subelements:
+                                    logging.info('processing xpath_filter')
+                                    try:
+                                        logging.info("Filter: " + xpath_filter)
+                                        logging.info("Child: " + str(parent.text))
+                                        logging.info("child: " + etree.tostring(child.xpath(xpath_filter)[0]))
+                                        confile.write(child.xpath(xpath_filter)[0].tag.lstrip().rstrip() + ': '
+                                                      + child.xpath(xpath_filter)[0].text.lstrip().rstrip() + '\n')
+                                    except (IndexError,lxml.etree.XPathSyntaxError, lxml.etree.XPathEvalError) as err:
+                                        logging.info(err)
+                                        logging.info("Undefined xpath: " + xpath_filter)
+                                confile.write('--------------------\n')
+                    elif args.get('format') == 'text':
                         confile.write(rpc_reply.text)
+                    elif args.get('format') == 'xmljson':
+                        confile.write(json.dumps(pk.data(etree.fromstring(etree.tostring(rpc_reply)))))
                     else:
-                        confile.write(etree.tostring(rpc_reply))
+                        confile.write(etree.tostring(rpc_reply), pretty_print=True)
                 else:
                     if args.get('format') == 'json':
                         results['rpc_reply'] = rpc_reply
@@ -220,11 +249,12 @@ def junos_rpc(module, dev):
 
         results['changed'] = True
     except Exception as err:
-       results['failed'] = True
-       logging.error("unable to get rpc due to:{0}".format(err.message))
-       raise err
+        results['failed'] = True
+        logging.error("unable to get rpc due to:{0}".format(err.message))
+        raise err
     logging.info("rpc reponse recvd")
     return results
+
 
 def main():
     module = AnsibleModule(
@@ -233,27 +263,42 @@ def main():
             logfile=dict(required=False, default=None),
             user=dict(required=False, default=os.getenv('USER')),
             passwd=dict(required=False, default=None),
+            ssh_private_key_file=dict(required=False, default=None),
             port=dict(required=False, default=830),
             timeout=dict(required=False, type='int', default=0),
             rpc=dict(required=True, default=None),
             kwargs=dict(required=False, default=None),
             filter_xml=dict(required=False, default=None),
+            filter_xpath=dict(required=False, type='list', default=None),
+            xpath_subelements=dict(required=False, type='list', default=None),
             format=dict(required=False, default='xml'),
+            stdout=dict(required=False, type='bool', default=False),
             dest=dict(required=False, default=None)),
         supports_check_mode=False)
 
     m_args = module.params
+
+    try:
+        from jnpr.junos import Device
+        from jnpr.junos.version import VERSION
+        if LooseVersion(VERSION) < LooseVersion('1.2.2'):
+            module.fail_json(msg='junos-eznc >= 1.2.2 is required for this module')
+    except ImportError as ex:
+        module.fail_json(msg='ImportError: %s' % ex.message)
+        raise ex
+
     # -----------
     # via NETCONF
     # -----------
     dev = Device(m_args['host'], user=m_args['user'], passwd=m_args['passwd'],
-                        port=m_args['port'], gather_facts=False)
+                 port=m_args['port'], ssh_private_key_file=m_args['ssh_private_key_file'],
+                 gather_facts=False)
     try:
         dev.open()
     except Exception as err:
         msg = 'unable to connect to {0}: {1}'.format(m_args['host'], str(err))
         module.fail_json(msg=msg)
-        return
+        raise err
 
     ## Change default Timeout
     if m_args['timeout'] > 0:
@@ -264,5 +309,6 @@ def main():
     dev.close()
     module.exit_json(**results)
 
-from ansible.module_utils.basic import *
+
+
 main()
