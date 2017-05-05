@@ -84,6 +84,19 @@ options:
         required: false
         default: no
         choices: ['true','false','yes','no']
+    update:
+        description:
+            - If set to ``True`` Compare a complete loaded configuration against
+              the candidate configuration. For each hierarchy level or
+              configuration object that is different in the two configurations,
+              the version in the loaded configuration replaces the version in the
+              candidate configuration. When the configuration is later committed,
+              only system processes that are affected by the changed configuration
+              elements parse the new configuration. This action is supported from
+              PyEZ 2.1
+        required: false
+        default: no
+        choices: ['true','false','yes','no']
     replace:
         description:
             - Specify whether the configuration I(file) uses "replace:" statements.
@@ -130,9 +143,23 @@ options:
         default: None
     port:
         description:
-            - TCP port number to use when connecting to the device
+            - port number to use when connecting to the device
         required: false
         default: 830
+    ssh_private_key_file:
+        description:
+            - This can be used if you need to provide a private key rather than
+              loading the key into the ssh-key-ring/environment.  if your
+              ssh-key requires a password, then you must provide it via
+              **passwd**
+        required: false
+        default: None
+    mode:
+        description:
+            - mode of console connection (telnet/serial). If mode is not
+              provided SSH connection is used.
+        required: false
+        default: None
     confirm:
         description:
             - Provide a confirm in minutes to the commit of the configuration
@@ -172,6 +199,14 @@ EXAMPLES = '''
     host={{ inventory_hostname }}
     file=snmp.conf
     replace=yes
+
+# Install/load config using console server connection using PyEZ >= 2.0
+
+- junos_install_config:
+    host={{ inventory_hostname }}
+    port=7016
+    mode='telnet'
+    file=default_new_switch.conf
 '''
 
 import logging
@@ -179,21 +214,23 @@ from os.path import isfile
 import os
 from distutils.version import LooseVersion
 
-try:
-    from jnpr.junos import Device
-    from jnpr.junos.exception import *
-    from jnpr.junos.utils.config import Config
-    from jnpr.junos.version import VERSION
-    if not LooseVersion(VERSION) >= LooseVersion('1.2.2'):
-        HAS_PYEZ = False
-    else:
-        HAS_PYEZ = True
-except ImportError:
-    HAS_PYEZ = False
-
 
 def _load_via_netconf(module):
     args = module.params
+
+    try:
+        from jnpr.junos import Device
+        from jnpr.junos.exception import LockError, UnlockError, \
+            ConfigLoadError, CommitError
+        from jnpr.junos.utils.config import Config
+        from jnpr.junos.version import VERSION
+        if not LooseVersion(VERSION) >= LooseVersion('1.2.2'):
+            module.fail_json(msg='junos-eznc >= 1.2.2 is required for this module')
+    except ImportError as ex:
+        module.fail_json(msg='ImportError: %s' % ex.message)
+
+    if args['mode'] is not None and LooseVersion(VERSION) < LooseVersion('2.0.0'):
+        module.fail_json(msg='junos-eznc >= 2.0.0 is required for console connection')
 
     logfile = args['logfile']
     if logfile is not None:
@@ -204,17 +241,22 @@ def _load_via_netconf(module):
     in_check_mode = module.check_mode
     overwrite = module.boolean(module.params['overwrite'])
     replace = module.boolean(module.params['replace'])
+    update = module.boolean(module.params['update'])
 
-    if all([overwrite, replace]):
-        msg = "Overwrite and Replace cannot both be True!"
+    actions = filter(lambda item: module.params.get(item, False),
+                     ('overwrite', 'replace', 'update'))
+    if len(list(actions)) >= 2:
+        msg = 'action can be only one among %s' % ', '.join(actions)
         logging.error(msg)
         module.fail_json(msg=msg)
 
     logging.info("connecting to host: {0}@{1}:{2}".format(args['user'], args['host'], args['port']))
 
     try:
-        dev = Device(args['host'], user=args['user'], password=args['passwd'], port=args['port'])
-        dev.open(gather_facts=False)
+        dev = Device(args['host'], user=args['user'], password=args['passwd'], port=args['port'],
+                     ssh_private_key_file=args['ssh_private_key_file'], mode=args['mode'],
+                     gather_facts=False)
+        dev.open()
     except Exception as err:
         msg = 'unable to connect to {0}: {1}'.format(args['host'], str(err))
         logging.error(msg)
@@ -255,6 +297,8 @@ def _load_via_netconf(module):
             load_args['merge'] = False
         elif overwrite is True:
             load_args['overwrite'] = True
+        elif update is True:
+            load_args['update'] = True
         elif overwrite is False:
             load_args['merge'] = True
         cu.load(**load_args)
@@ -403,10 +447,11 @@ def main():
         argument_spec=dict(
             host=dict(required=True),
             user=dict(required=False, default=os.getenv('USER')),
-            passwd=dict(required=False, default=None),
+            passwd=dict(required=False, default=None, no_log=True),
             console=dict(required=False, default=None),
             file=dict(required=True),
             overwrite=dict(required=False, type='bool', choices=BOOLEANS, default=False),
+            update=dict(required=False, type='bool', choices=BOOLEANS, default=False),
             replace=dict(required=False, type='bool', choices=BOOLEANS, default=False),
             logfile=dict(required=False, default=None),
             diffs_file=dict(required=False, default=None),
@@ -414,13 +459,12 @@ def main():
             timeout=dict(required=False, default=0),
             comment=dict(required=False, default=None),
             port=dict(required=False, default=830),
+            ssh_private_key_file=dict(required=False, default=None),
+            mode=dict(required=False, default=None),
             confirm=dict(required=False, default=None),
             check_commit_wait=dict(required=False, default=None)
         ),
         supports_check_mode=True)
-
-    if not HAS_PYEZ:
-        module.fail_json(msg='junos-eznc >= 1.2.2 is required for this module')
 
     args = module.params
 
@@ -436,4 +480,6 @@ def main():
     _ldr(module)
 
 from ansible.module_utils.basic import *
-main()
+
+if __name__ == '__main__':
+    main()

@@ -60,9 +60,23 @@ options:
         default: assumes ssh-key active
     port:
         description:
-            - TCP port number to use when connecting to the device
+            - port number to use when connecting to the device
         required: false
         default: 830
+    ssh_private_key_file:
+        description:
+            - This can be used if you need to provide a private key rather than
+              loading the key into the ssh-key-ring/environment.  if your
+              ssh-key requires a password, then you must provide it via
+              **passwd**
+        required: false
+        default: None
+    mode:
+        description:
+            - mode of console connection (telnet/serial). If mode is not
+              provided SSH connection is used.
+        required: false
+        default: None
     timeout:
         description:
             - Extend the NETCONF RPC timeout beyond the default value of
@@ -93,30 +107,28 @@ EXAMPLES = '''
    host: "{{ inventory_hostname }}"
    logfile=changes.log
    comment="Non load commit"
+
+# over console server connection using PyEZ >= 2.0
+- name: junos commit
+  junos_commit:
+    host={{ inventory_hostname }}
+    port=7016
+    mode='telnet'
+    comment="commit with console connection via PyEZ"
 '''
+
 from distutils.version import LooseVersion
 import logging
-
-try:
-    from jnpr.junos import Device
-    from jnpr.junos.version import VERSION
-    from jnpr.junos.utils.config import Config
-    from jnpr.junos.exception import CommitError, LockError, UnlockError
-    if not LooseVersion(VERSION) >= LooseVersion('1.2.2'):
-        HAS_PYEZ = False
-    else:
-        HAS_PYEZ = True
-except ImportError:
-    HAS_PYEZ = False
-
 
 def main():
 
     module = AnsibleModule(
         argument_spec=dict(host=dict(required=True, default=None),  # host or ipaddr
                            user=dict(required=False, default=os.getenv('USER')),
-                           passwd=dict(required=False, default=None),
+                           passwd=dict(required=False, default=None, no_log=True),
                            port=dict(required=False, default=830),
+                           ssh_private_key_file=dict(required=False, default=None),
+                           mode=dict(required=False, default=None),
                            timeout=dict(required=False, default=0),
                            logfile=dict(required=False, default=None),
                            comment=dict(required=False, default=None),
@@ -124,13 +136,22 @@ def main():
                            ),
         supports_check_mode=True)
 
-    if not HAS_PYEZ:
-        module.fail_json(msg='junos-eznc >= 1.2.2 is required for this module')
-
     args = module.params
     in_check_mode = module.check_mode
-
     results = dict(changed=False)
+
+    try:
+        from jnpr.junos import Device
+        from jnpr.junos.version import VERSION
+        from jnpr.junos.utils.config import Config
+        from jnpr.junos.exception import CommitError, LockError, UnlockError
+        if not LooseVersion(VERSION) >= LooseVersion('1.2.2'):
+            module.fail_json(msg='junos-eznc >= 1.2.2 is required for this module')
+    except ImportError as ex:
+        module.fail_json(msg='ImportError: %s' % ex.message)
+
+    if args['mode'] is not None and LooseVersion(VERSION) < LooseVersion('2.0.0'):
+        module.fail_json(msg='junos-eznc >= 2.0.0 is required for console connection.')
 
     logfile = args['logfile']
     if logfile is not None:
@@ -142,7 +163,8 @@ def main():
 
     try:
         dev = Device(args['host'], user=args['user'], password=args['passwd'],
-                     port=args['port'], gather_facts=False).open()
+                     port=args['port'], ssh_private_key_file=args['ssh_private_key_file'],
+                     mode=args['mode'], gather_facts=False).open()
     except Exception as err:
         msg = 'unable to connect to {0}: {1}'.format(args['host'], str(err))
         logging.error(msg)
@@ -206,4 +228,6 @@ def main():
     module.exit_json(**results)
 
 from ansible.module_utils.basic import *
-main()
+
+if __name__ == '__main__':
+    main()

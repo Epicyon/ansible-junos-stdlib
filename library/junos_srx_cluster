@@ -52,9 +52,23 @@ options:
         required: true
     port:
         description:
-            - TCP port number to use when connecting to the device
+            - port number to use when connecting to the device
         required: false
         default: 830
+    ssh_private_key_file:
+        description:
+            - This can be used if you need to provide a private key rather than
+              loading the key into the ssh-key-ring/environment.  if your
+              ssh-key requires a password, then you must provide it via
+              **passwd**
+        required: false
+        default: None
+    mode:
+        description:
+            - mode of console connection (telnet/serial). If mode is not
+              provided SSH connection is used.
+        required: false
+        default: None
     console:
         description:
             - SERIAL or TERMINAL-SERVER port setting, per use with
@@ -114,7 +128,18 @@ EXAMPLES = '''
   passwd=password123
   cluster_enable=false
   logfile=cluster.log
+
+# over console server connection using PyEZ >= 2.0
+-junos_srx_cluster:
+  host={{ inventory_hostname }}
+  user=rick
+  passwd=password123
+  mode="telnet"
+  port=7032
+  cluster_enable=true
+  logfile=cluster.log
 '''
+
 import os
 import logging
 from distutils.version import LooseVersion
@@ -126,8 +151,10 @@ def main():
         argument_spec=dict(
             host=dict(required=True, default=None),       # host or ipaddr
             user=dict(required=False, default=os.getenv('USER')),
-            passwd=dict(required=False, default=None),
+            passwd=dict(required=False, default=None, no_log=True),
             port=dict(required=False, default=830),
+            ssh_private_key_file=dict(required=False, default=None),
+            mode=dict(required=False, default=None),
             console=dict(required=False, default=None),     # param to netconify
             cluster_enable=dict(required=True, type='bool', choices=BOOLEANS, default=None),
             cluster_id=dict(required=False, default=None),
@@ -162,10 +189,15 @@ def main():
             from jnpr.junos.version import VERSION
             if not LooseVersion(VERSION) >= LooseVersion('1.2.2'):
                 module.fail_json(msg='junos-eznc >= 1.2.2 is required for this module')
-        except ImportError:
-            module.fail_json(msg='junos-eznc >= 1.2.2 is required for this module')
+        except ImportError as ex:
+            module.fail_json(msg='ImportError: %s' % ex.message)
 
-        dev = Device(args['host'], user=args['user'], password=args['passwd'], port=args['port'], gather_facts=('false'))
+        if args['mode'] is not None and LooseVersion(VERSION) < LooseVersion('2.0.0'):
+            module.fail_json(msg='junos-eznc >= 2.0.0 is required for console connection')
+
+        dev = Device(args['host'], user=args['user'], password=args['passwd'],
+                     port=args['port'], ssh_private_key_file=args['ssh_private_key_file'],
+                     mode=args['mode'], gather_facts=False)
         try:
             logging.info('LOGIN: host={0} port={1}'.format(args['host'], args['port']))
             dev.open()
@@ -234,4 +266,6 @@ def main():
     module.exit_json(**results)
 
 from ansible.module_utils.basic import *
-main()
+
+if __name__ == '__main__':
+    main()
