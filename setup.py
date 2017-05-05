@@ -1,17 +1,17 @@
+#!/usr/bin/env python
 from setuptools import setup
 from version import VERSION
 
 setup(
     name="ansible-junos-stdlib",    
     version=VERSION,
-    author="Jeremy Schulman",
+    author="Jeremy Schulman, Nitin Kumar, Rick Sherman, Stacy Smith",
     author_email="jnpr-community-netdev@juniper.net",
     description=("Ansible Network build automation of Junos devices."),
     license="Apache 2.0",
     keywords="Ansible Junos NETCONF networking automation",
     url="http://www.github.com/Juniper/ansible-junos-stdlib",
     packages=['library'],
-    #scripts = ['library/junos_get_facts', 'library/junos_install_config'],
     classifiers=[
         'Development Status :: 5 - Production/Stable',
         'Environment :: Console',

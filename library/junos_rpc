@@ -51,7 +51,7 @@ short_description: run given rpc
 description:
     - run given rpc
 requirements:
-    - junos-eznc >= 1.0.0
+    - junos-eznc >= 1.2.2
 options:
     host:
         description:
@@ -69,9 +69,23 @@ options:
         default: assumes ssh-key active
     port:
         description:
-            - TCP port number to use when connecting to the device
+            - port number to use when connecting to the device
         required: false
         default: 830
+    ssh_private_key_file:
+        description:
+            - This can be used if you need to provide a private key rather than
+              loading the key into the ssh-key-ring/environment.  if your
+              ssh-key requires a password, then you must provide it via
+              **passwd**
+        required: false
+        default: None
+    mode:
+        description:
+            - mode of console connection (telnet/serial). If mode is not
+              provided SSH connection is used.
+        required: false
+        default: None
     logfile:
         description:
             - Path on the local server where the progress status is logged
@@ -87,6 +101,7 @@ options:
             - params need to be passed to rpc
                 kwargs="interface_name=em0" or kwargs="interface_name=em0,media=True"
                 kwargs={interface_name:em0}
+                kwargs={interface_name:em0,media:True}
                 kwargs={interface_name:em0,media:True}
     filter_xml:
         description:
@@ -140,6 +155,15 @@ EXAMPLES = '''
     rpc=get-config
     dest=get_config.conf
 
+# Fetch configuration over console server connection using PyEZ >= 2.0
+- name: Get Device Configuration
+  junos_rpc:
+    host={{ inventory_hostname }}
+    port=7005
+    mode='telnet'
+    rpc=get-config
+    dest=get_config.conf
+
 # Example to fetch device configuration
 - name: Get Device Configuration for interface
   junos_rpc:
@@ -160,17 +184,25 @@ EXAMPLES = '''
   tasks:
     - name: Get interface information
       junos_rpc:
-        host={{ inventory_hostname }}
-        rpc=get-interface-information
-        kwargs={interface_name:em0,media:True}
-        format=json
-        dest=get_interface_information.conf
+        host: "{{ inventory_hostname }}"
+        rpc: get-interface-information
+        kwargs:
+          interface_name: em0
+          media: True
+        format: json
+        dest: get_interface_information.conf
       register: junos
 
     - name: Print configuration
       debug: msg="{{ junos.rpc_reply }}"
 '''
 
+import os
+import sys
+import logging
+import re
+from distutils.version import LooseVersion
+from lxml import etree
 
 def junos_rpc(module, dev):
     args = module.params
@@ -183,7 +215,6 @@ def junos_rpc(module, dev):
     kwargs = module.params['kwargs']
     rpc = module.params['rpc']
     results['rpc'] = rpc
-    results['kwargs'] = kwargs
     results['changed'] = False
     results['check_mode'] = module.check_mode
     filter_xpath = module.params['filter_xpath']
@@ -265,6 +296,8 @@ def main():
             passwd=dict(required=False, default=None),
             ssh_private_key_file=dict(required=False, default=None),
             port=dict(required=False, default=830),
+            ssh_private_key_file=dict(required=False, default=None),
+            mode=dict(required=False, default=None),
             timeout=dict(required=False, type='int', default=0),
             rpc=dict(required=True, default=None),
             kwargs=dict(required=False, default=None),
@@ -292,7 +325,7 @@ def main():
     # -----------
     dev = Device(m_args['host'], user=m_args['user'], passwd=m_args['passwd'],
                  port=m_args['port'], ssh_private_key_file=m_args['ssh_private_key_file'],
-                 gather_facts=False)
+                 mode=m_args['mode'], gather_facts=False)
     try:
         dev.open()
     except Exception as err:
@@ -310,5 +343,5 @@ def main():
     module.exit_json(**results)
 
 
-
-main()
+if __name__ == '__main__':
+    main()

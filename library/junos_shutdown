@@ -84,9 +84,23 @@ options:
         default: None
     port:
         description:
-            - TCP port number to use when connecting to the device
+            - port number to use when connecting to the device
         required: false
         default: 830
+    ssh_private_key_file:
+        description:
+            - This can be used if you need to provide a private key rather than
+              loading the key into the ssh-key-ring/environment.  if your
+              ssh-key requires a password, then you must provide it via
+              **passwd**
+        required: false
+        default: None
+    mode:
+        description:
+            - mode of console connection (telnet/serial). If mode is not
+              provided SSH connection is used.
+        required: false
+        default: None
 '''
 
 EXAMPLES = '''
@@ -94,20 +108,16 @@ EXAMPLES = '''
     host={{ inventory_hostname }}
     shutdown="shutdown"
     reboot=yes
+
+# over console server connection using PyEZ >= 2.0
+- junos_shutdown:
+    host={{ inventory_hostname }}
+    shutdown="shutdown"
+    reboot=yes
+    mode='telnet'
+    port=7016
 '''
 from distutils.version import LooseVersion
-
-try:
-    from jnpr.junos import Device
-    from jnpr.junos.utils.sw import SW
-    from jnpr.junos.version import VERSION
-    if not LooseVersion(VERSION) >= LooseVersion('1.2.2'):
-        HAS_PYEZ = False
-    else:
-        HAS_PYEZ = True
-except ImportError:
-    HAS_PYEZ = False
-
 
 def main():
 
@@ -116,18 +126,30 @@ def main():
             shutdown=dict(required=True, default=None),   # must be set to 'shutdown'
             host=dict(required=True, default=None),       # host or ipaddr
             user=dict(required=False, default=os.getenv('USER')),
-            passwd=dict(required=False, default=None),
+            passwd=dict(required=False, default=None, no_log=True),
             reboot=dict(required=False, type='bool', choices=BOOLEANS, default=False),
             port=dict(required=False, default=830),
+            ssh_private_key_file=dict(required=False, default=None),
+            mode=dict(required=False, default=None),
             in_min=dict(required=False, default=0),
             at=dict(required=False, type='str', default=None)
         ),
         supports_check_mode=False)
 
-    if not HAS_PYEZ:
-        module.fail_json(msg='junos-eznc >= 1.2.2 is required for this module')
-
     args = module.params
+
+    try:
+        from jnpr.junos import Device
+        from jnpr.junos.utils.sw import SW
+        from jnpr.junos.version import VERSION
+        if not LooseVersion(VERSION) >= LooseVersion('1.2.2'):
+            module.fail_json(msg='junos-eznc >= 1.2.2 is required for this module')
+    except ImportError as ex:
+        module.fail_json(msg='ImportError: %s' % ex.message)
+
+    if args['mode'] is not None and LooseVersion(VERSION) < LooseVersion('2.0.0'):
+        module.fail_json(msg='junos-eznc >= 2.0.0 is required for console connection.')
+
     if args['shutdown'] != 'shutdown':
         module.fail_json(msg='Say "shutdown" to proceed')
 
@@ -140,7 +162,9 @@ def main():
         # --- UNREACHABLE ---
 
     try:
-        dev = Device(args['host'], user=args['user'], password=args['passwd'], port=args['port']).open()
+        dev = Device(args['host'], user=args['user'], password=args['passwd'],
+                     port=args['port'], ssh_private_key_file=args['ssh_private_key_file'],
+                     mode=args['mode'], gather_facts=False).open()
     except Exception as err:
         msg = 'unable to connect to {0}: {1}'.format(args['host'], str(err))
         module.fail_json(msg=msg)
@@ -167,4 +191,6 @@ def main():
     module.exit_json(**results)
 
 from ansible.module_utils.basic import *
-main()
+
+if __name__ == '__main__':
+    main()
